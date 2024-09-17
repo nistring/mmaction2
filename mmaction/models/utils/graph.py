@@ -112,7 +112,7 @@ class Graph:
 
     Args:
         layout (str or dict): must be one of the following candidates:
-            'openpose', 'nturgb+d', 'coco', or a dict with the following
+            'openpose', 'nturgb+d', 'coco', 'gm', or a dict with the following
             keys: 'num_node', 'inward', and 'center'.
             Defaults to ``'coco'``.
         mode (str): must be one of the following candidates:
@@ -135,7 +135,7 @@ class Graph:
             assert 'inward' in layout
             assert 'center' in layout
         else:
-            assert layout in ['openpose', 'nturgb+d', 'coco']
+            assert layout in ['openpose', 'nturgb+d', 'coco', 'gm']
 
         self.set_layout(layout)
         self.hop_dis = get_hop_distance(self.num_node, self.inward, max_hop)
@@ -170,6 +170,14 @@ class Graph:
                            (12, 6), (9, 7), (7, 5), (10, 8), (8, 6), (5, 0),
                            (6, 0), (1, 0), (3, 1), (2, 0), (4, 2)]
             self.center = 0
+        elif layout == 'gm':
+            self.num_node = 29
+            self.inward = [(0, 1), (0, 2), (1, 3), (2, 3), (16, 3),
+                            (9, 7), (9, 8), (7, 5), (8, 6), (5, 4), (6, 4), (4, 3),
+                            (15, 13), (15, 14), (13, 11), (14, 12), (11, 10), (12, 10), (10, 3),
+                            (22, 20), (22, 21), (20, 18), (21, 19), (18, 17), (19, 17), (17, 16),
+                            (28, 26), (28, 27), (26, 24), (27, 25), (24, 23), (25, 23), (23, 16)]
+            self.center = 3
         elif isinstance(layout, dict):
             self.num_node = layout['num_node']
             self.inward = layout['inward']

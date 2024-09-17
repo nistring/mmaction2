@@ -783,6 +783,97 @@ class SampleAVAFrames(SampleFrames):
 
 
 @TRANSFORMS.register_module()
+class SampleAllFrames(BaseTransform):
+    """Uniformly sample frames from the video.
+
+    Modified from https://github.com/facebookresearch/SlowFast/blob/64a
+    bcc90ccfdcbb11cf91d6e525bed60e92a8796/slowfast/datasets/ssv2.py#L159.
+
+    To sample an n-frame clip from the video. UniformSample basically
+    divides the video into n segments of equal length and randomly samples one
+    frame from each segment.
+
+    Required keys:
+
+        - total_frames
+        - start_index
+
+    Added keys:
+
+        - frame_inds
+        - clip_len
+        - frame_interval
+        - num_clips
+
+    Args:
+        clip_len (int): Frames of each sampled output clip.
+        num_clips (int): Number of clips to be sampled. Defaults to 1.
+        test_mode (bool): Store True when building test or validation dataset.
+            Defaults to False.
+    """
+
+    def __init__(self,
+                 clip_len: int = 75,
+                 num_clips: int = 12,
+                 frame_interval: int = 2,
+                 test_mode=False) -> None:
+
+        self.clip_len = clip_len
+        self.num_clips = num_clips
+        self.frame_interval = frame_interval
+        self.test_mode = test_mode
+
+    def _get_sample_clips(self, num_frames: int) -> np.ndarray:
+        """To sample an n-frame clip from the video. UniformSample basically
+        divides the video into n segments of equal length and randomly samples
+        one frame from each segment. When the duration of video frames is
+        shorter than the desired length of the target clip, this approach will
+        duplicate the sampled frame instead of looping the sample in "loop"
+        mode. In the test mode, when we need to sample multiple clips,
+        specifically 'n' clips, this method will further divide the segments
+        based on the number of clips to be sampled. The 'i-th' clip will.
+
+        sample the frame located at the position 'i * len(segment) / n'
+        within the segment.
+
+        Args:
+            num_frames (int): Total number of frame in the video.
+
+        Returns:
+            seq (np.ndarray): the indexes of frames of sampled from the video.
+        """
+        offset = 0 if self.test_mode else np.random.randint(num_frames - self.frame_interval * self.clip_len * self.num_clips)
+        inds = np.arange(self.num_clips * self.clip_len) * self.frame_interval + offset
+        return inds
+
+    def transform(self, results: Dict) -> Dict:
+        """Perform the Uniform Sampling.
+
+        Args:
+            results (dict): The result dict.
+
+        Returns:
+            dict: The result dict.
+        """
+        num_frames = results['total_frames']
+
+        inds = self._get_sample_clips(num_frames)
+
+        results['frame_inds'] = inds.astype(np.int32)
+        results['clip_len'] = self.clip_len
+        results['frame_interval'] = self.frame_interval
+        results['num_clips'] = self.num_clips
+        return results
+
+    def __repr__(self) -> str:
+        repr_str = (f'{self.__class__.__name__}('
+                    f'clip_len={self.clip_len}, '
+                    f'num_clips={self.num_clips}, '
+                    f'frame_interval={self.frame_interval}')
+        return repr_str
+
+
+@TRANSFORMS.register_module()
 class PyAVInit(BaseTransform):
     """Using pyav to initialize the video.
 
