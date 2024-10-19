@@ -12,7 +12,7 @@ from .loading import (ArrayDecode, AudioFeatureSelector, BuildPseudoClip,
 from .pose_transforms import (DecompressPose, GeneratePoseTarget, GenSkeFeat,
                               JointToBone, MergeSkeFeat, MMCompact, MMDecode,
                               MMUniformSampleFrames, PadTo, PoseCompact,
-                              PoseDecode, PreNormalize2D, PreNormalize3D,
+                              PoseDecode, PreNormalize2D, AlignPose, PreNormalize3D,
                               ToMotion, UniformSampleFrames)
 from .processing import (CenterCrop, ColorJitter, Flip, Fuse, MultiScaleCrop,
                          RandomCrop, RandomRescale, RandomResizedCrop, Resize,

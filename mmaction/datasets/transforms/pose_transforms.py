@@ -738,14 +738,92 @@ class PreNormalize2D(BaseTransform):
         """
         h, w = results.get('img_shape', self.img_shape)
         results['keypoint'][..., 0] = \
-            (results['keypoint'][..., 0] - (w / 2)) / (w / 2)
+            (results['keypoint'][..., 0] - (w / 2)) / (w * h / (w + h))
         results['keypoint'][..., 1] = \
-            (results['keypoint'][..., 1] - (h / 2)) / (h / 2)
+            (results['keypoint'][..., 1] - (h / 2)) / (w * h / (w + h))
         return results
 
     def __repr__(self) -> str:
         repr_str = (f'{self.__class__.__name__}('
                     f'img_shape={self.img_shape})')
+        return repr_str
+
+@TRANSFORMS.register_module()
+class AlignPose(BaseTransform):
+    """Normalize the range of keypoint values.
+
+    Required Keys:
+
+        - keypoint
+        - img_shape (optional)
+
+    Modified Keys:
+
+        - keypoint
+
+    Args:
+    """
+
+    def __init__(self, aug: bool = False, dataset: str = 'coco',
+        rand_angle: tuple = (-30, 30), rand_scale: tuple = (2/3, 4/3), rand_trans: tuple = (-1/3, 1/3)) -> None:
+        self.aug = aug
+        self.dataset = dataset
+        self.rand_angle = rand_angle
+        self.rand_scale = rand_scale
+        self.rand_trans = rand_trans
+
+    def transform(self, results: Dict) -> Dict:
+        """The transform function of :class:`PreNormalize2D`.
+
+        Args:
+            results (dict): The result dict.
+            results['keypoint']: (num_person, num_frames, num_joints, 2)
+
+        Returns:
+            dict: The result dict.
+        """
+        assert results['keypoint'].shape[0] == 1, "num_person == 1"
+        if self.dataset == 'coco':
+            # mean of neck, and two hip joints
+            center_j = results['keypoint'][..., [5, 6, 11, 12], :].mean((0, 1, 2))
+            axis = results['keypoint'][..., [5, 6], :].mean((0, 1, 2)) - center_j
+        elif self.dataset == 'gm':
+            # mean of neck and pelvis
+            center_j = results['keypoint'][..., [3, 16], :].mean((0, 1, 2))
+            axis = results['keypoint'][..., [3], :].mean((0, 1, 2)) - center_j
+        else:
+            raise KeyError
+
+        a = np.pi/2 - np.arctan2(axis[1], axis[0])
+        t = np.array([0., 0.])
+        s = 1.
+        if self.aug:
+            a = a + np.deg2rad(np.random.rand() * (self.rand_angle[1] - self.rand_angle[0]) + self.rand_angle[0])
+            s = np.random.rand() * (self.rand_scale[1] - self.rand_scale[0]) + self.rand_scale[0]
+            t = np.random.rand(2) * (self.rand_trans[1] - self.rand_trans[0]) + self.rand_trans[0]
+
+        results['keypoint'] = (s * np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]) @ \
+            (results['keypoint'] - center_j)[..., np.newaxis])[..., 0] + t
+
+        if self.aug:
+            if np.random.rand() > 0.5:
+                results['keypoint'][..., 0] = -results['keypoint'][..., 0]
+                if self.dataset == 'coco':
+                    results['keypoint'] = \
+                        results['keypoint'][..., [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15], :]
+                    results['keypoint_score'] = \
+                        results['keypoint_score'][..., [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]]
+                elif self.dataset == 'gm':
+                    results['keypoint'] = \
+                        results['keypoint'][..., [0, 2, 1, 3, 10, 11, 12, 13, 14, 15, 4, 5, 6, 7, 8, 9, 16, 23, 24, 25, 26, 27, 28, 17, 18, 19, 20, 21, 22], :]
+                    results['keypoint_score'] = \
+                        results['keypoint_score'][..., [0, 2, 1, 3, 10, 11, 12, 13, 14, 15, 4, 5, 6, 7, 8, 9, 16, 23, 24, 25, 26, 27, 28, 17, 18, 19, 20, 21, 22]]
+
+        return results
+
+    def __repr__(self) -> str:
+        repr_str = (f'{self.__class__.__name__}('
+                    f'dataset={self.dataset})')
         return repr_str
 
 
@@ -773,7 +851,7 @@ class JointToBone(BaseTransform):
                  target: str = 'keypoint') -> None:
         self.dataset = dataset
         self.target = target
-        if self.dataset not in ['nturgb+d', 'openpose', 'coco']:
+        if self.dataset not in ['nturgb+d', 'openpose', 'coco', 'gm']:
             raise ValueError(
                 f'The dataset type {self.dataset} is not supported')
         if self.dataset == 'nturgb+d':
@@ -791,6 +869,13 @@ class JointToBone(BaseTransform):
             self.pairs = ((0, 0), (1, 0), (2, 0), (3, 1), (4, 2), (5, 0),
                           (6, 0), (7, 5), (8, 6), (9, 7), (10, 8), (11, 0),
                           (12, 0), (13, 11), (14, 12), (15, 13), (16, 14))
+        elif self.dataset == 'gm':
+            self.pairs = ((0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 4),
+                          (6, 4), (7, 5), (8, 6), (9, 4), (10, 3), (11, 10),
+                          (12, 10), (13, 11), (14, 12), (15, 10), (16, 3),
+                          (17, 16), (18, 17), (19, 17), (20, 18), (21, 19),
+                          (22, 17), (23, 16), (24, 23), (25, 23), (26, 24),
+                          (27, 25), (28, 23))
 
     def transform(self, results: Dict) -> Dict:
         """The transform function of :class:`JointToBone`.
@@ -939,7 +1024,7 @@ class GenSkeFeat(BaseTransform):
 
     Args:
         dataset (str): Define the type of dataset: 'nturgb+d', 'openpose',
-            'coco'. Defaults to ``'nturgb+d'``.
+            'coco', 'gm'. Defaults to ``'nturgb+d'``.
         feats (list[str]): The list of the keys of features.
             Defaults to ``['j']``.
         axis (int): The axis along which the features will be joined.

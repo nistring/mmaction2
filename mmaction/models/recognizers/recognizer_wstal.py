@@ -9,88 +9,38 @@ from mmaction.utils import ConfigType, ForwardResults, SampleList, OptSampleList
 
 import math
 
-# https://github.com/Pilhyeon/BaSNet-pytorch/blob/master/model.py
-class AttentionModule(nn.Module):
-    def __init__(self, len_feature):
-        super(AttentionModule, self).__init__()
-        self.len_feature = len_feature
-        self.conv_1 = nn.Sequential(
-            nn.Conv1d(in_channels=self.len_feature, out_channels=512, kernel_size=1,
-                    stride=1, padding=0),
-            nn.ReLU()
-        )
-        self.conv_2 = nn.Sequential(
-            nn.Conv1d(in_channels=512, out_channels=2, kernel_size=1,
-                    stride=1, padding=0),
-        )
-        self.softmax = nn.Softmax(1)
-
-    def forward(self, x):
-        # x: (B, F, T)
-        out = self.conv_1(x)
-        out = self.conv_2(out)
-        out = self.softmax(out)
-        # out: (B, 2, T)
-        return out
-        
-
-class CASModule(nn.Module):
+# https://keras.io/examples/timeseries/timeseries_classification_from_scratch/
+class ACMNet(nn.Module):
     def __init__(self, len_feature, num_classes):
-        super(CASModule, self).__init__()
-        self.len_feature = len_feature
+        super(ACMNet, self).__init__()
         self.conv_1 = nn.Sequential(
-            nn.Conv1d(in_channels=self.len_feature, out_channels=2048, kernel_size=3,
-                      stride=1, padding=1),
-            nn.ReLU()
+            nn.Conv1d(in_channels=len_feature, out_channels=len_feature, kernel_size=3,
+                    stride=1, padding=1),
+            nn.BatchNorm1d(len_feature),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=len_feature, out_channels=len_feature, kernel_size=3,
+                    stride=1, padding=1),
+            nn.BatchNorm1d(len_feature),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=len_feature, out_channels=len_feature, kernel_size=3,
+                    stride=1, padding=1),
+            nn.BatchNorm1d(len_feature),
+            nn.ReLU(),
         )
-                
-        self.conv_2 = nn.Sequential(
-            nn.Conv1d(in_channels=2048, out_channels=2048, kernel_size=3,
-                      stride=1, padding=1),
-            nn.ReLU()
-        )
-
-        self.conv_3 = nn.Sequential(
-            nn.Conv1d(in_channels=2048, out_channels=num_classes + 1, kernel_size=1,
-                      stride=1, padding=0, bias=False),
-            nn.ReLU()
-        )
-        # self.drop_out = nn.Dropout(p=0.7)
+        self.conv_2 = nn.Conv1d(in_channels=len_feature, out_channels=3, kernel_size=3,
+            stride=1, padding=1)
+        self.fc = nn.Linear(in_features=len_feature, out_features=num_classes + 1)
+        self.softmax = nn.Softmax(-1)
 
     def forward(self, x):
-        # x: (B, F, T)
-        out = self.conv_1(x)
-        out = self.conv_2(out)
-        # out = self.drop_out(out)
-        out = self.conv_3(out)
-        # out: (B, C + 1, T)
-        return out
-
-# https://github.com/Pilhyeon/BaSNet-pytorch/blob/master/train.py
-class BasNetLoss(nn.Module):
-    def __init__(self, alpha = 1.0e-4):
-        super(BasNetLoss, self).__init__()
-        self.alpha = alpha
-        self.ce_criterion = nn.BCELoss()
-
-    def forward(self, score_fore, score_back, attention, label):
-        loss = {}
-
-        label_fore = torch.cat((label, torch.zeros((label.shape[0], 1)).to(label.device)), dim=1)
-        label_back = torch.cat((torch.zeros_like(label), torch.ones((label.shape[0], 1)).to(label.device)), dim=1)
-
-        loss_base = self.ce_criterion(score_fore, label_fore)
-        loss_back = self.ce_criterion(score_back, label_back)
-        loss_norm = torch.mean(torch.norm(attention, p=1, dim=2))
-
-        loss_total = loss_base + loss_back + self.alpha * loss_norm
-
-        loss["loss_base"] = loss_base
-        loss["loss_supp"] = loss_back
-        loss["loss_norm"] = loss_norm
-        loss["loss_total"] = loss_total
-
-        return loss_total, loss
+        x = self.conv_1(x)
+        attention = self.softmax(self.conv_2(x).permute(0, 2, 1))
+        x = self.fc(x.permute(0, 2, 1))
+        instance = x * attention[..., [0]]
+        context = x * attention[..., [1]]
+        background = x * attention[..., [2]]
+        return instance, context, background
+        
 
 @MODELS.register_module()
 class RecognizerWSTAL(BaseModel):
@@ -101,21 +51,23 @@ class RecognizerWSTAL(BaseModel):
     videos as inputs.
     """
 
-    def __init__(self, backbone: ConfigType, cls_head: ConfigType,
+    def __init__(self, backbone: ConfigType, cls_head: ConfigType, weight, freeze: bool = False, topk: float = 1/4,
                  data_preprocessor: ConfigType = None) -> None:
         if data_preprocessor is None:
             # This preprocessor will only stack batch data samples.
             data_preprocessor = dict(type='ActionDataPreprocessor')
         super(RecognizerWSTAL, self).__init__(data_preprocessor=data_preprocessor)
-        self.num_classes = cls_head["num_classes"]
         self.backbone = MODELS.build(backbone)
-        self.feature_head = MODELS.build(dict(type="FeatureHead", backbone_name="gcn"))
-        self.filter_module = AttentionModule(cls_head["len_feature"])
-        self.cas_module = CASModule(cls_head["len_feature"], self.num_classes)
-        self.softmax = nn.Softmax(dim=1)
-        self.bas_net_loss = BasNetLoss(cls_head["alpha"])
-        
-        self.k = cls_head["topk"]
+        if freeze:
+            self.backbone.eval()
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+        self.num_classes = cls_head["num_classes"]
+        self.attention = ACMNet(cls_head["in_channels"], self.num_classes)
+        self.cls_head = MODELS.build(dict(type="FeatureHead", backbone_name="gcn"))
+        self.ce_criterion = nn.CrossEntropyLoss(weight=torch.Tensor(weight))
+        self.topk = topk
+        torch.set_printoptions(sci_mode=False)
 
     def extract_feat(self,
                      inputs: torch.Tensor,
@@ -138,32 +90,15 @@ class RecognizerWSTAL(BaseModel):
         inputs = inputs.reshape((bs * nc, ) + inputs.shape[2:])
 
         x = self.backbone(inputs) # N, M, C, T, V
-        x = self.feature_head(x).reshape(bs, nc, -1).permute(0, 2, 1) # B, C, N
         
         if stage == "backbone":
             return x
 
-        attention = self.filter_module(x)
-        x = self.cas_module(x)
-        cas_fore = attention[:, 0:1] * x
-        cas_back = attention[:, 1:2] * x
+        x = self.cls_head(x).reshape(bs, nc, -1).permute(0, 2, 1) # B, C, M
+        instance, context, background = self.attention(x) # B, M, num_classes+1
+        # x = nn.functional.softmax(self.cls_head(x).reshape(bs, nc, -1), -1)
 
-        # slicing after sorting is much faster than torch.topk (https://github.com/pytorch/pytorch/issues/22812)
-        # score_base = torch.mean(torch.topk(cas_base, self.k, dim=1)[0], dim=-1)
-        sorted_scores_fore, _= cas_fore.sort(descending=True, dim=-1)
-        topk_scores_fore = sorted_scores_fore[:, :, :math.ceil(sorted_scores_fore.shape[2] * self.k)]
-        score_fore = torch.mean(topk_scores_fore, dim=2)
-
-        # score_supp = torch.mean(torch.topk(cas_supp, self.k, dim=1)[0], dim=-1)
-        sorted_scores_back, _= cas_back.sort(descending=True, dim=-1)
-        topk_scores_back = sorted_scores_back[:, :, :math.ceil(sorted_scores_back.shape[2] * self.k)]
-        score_back = torch.mean(topk_scores_back, dim=2)
-
-        score_fore = self.softmax(score_fore)
-        score_back = self.softmax(score_back)
-
-
-        return score_fore, cas_fore, score_back, cas_back, attention
+        return instance, context, background
 
 
     def loss(self, inputs: torch.Tensor, data_samples: SampleList,
@@ -180,17 +115,23 @@ class RecognizerWSTAL(BaseModel):
         Returns:
             dict: A dictionary of loss components.
         """
-        score_base, cas_base, score_supp, cas_supp, fore_weights = self.extract_feat(inputs)
+        instance, context, background = self.extract_feat(inputs)
+        n = instance.shape[1]
+        instance = torch.mean(torch.sort(instance, dim=1, descending=True)[0][:, :round(n * self.topk[0])], dim=1) # B, num_classes+1
+        context = torch.mean(torch.sort(context, dim=1, descending=True)[0][:, :round(n * self.topk[1])], dim=1) # B, num_classes+1
+        background = torch.mean(torch.sort(background, dim=1, descending=True)[0][:, :round(n * self.topk[2])], dim=1) # B, num_classes+1
 
-        labels = [x.gt_label for x in data_samples]
-        labels = torch.stack(labels).to(score_base.device)
-        labels = labels.squeeze()
-        labels = nn.functional.one_hot(labels, num_classes=self.num_classes)
-        labels = labels.expand(score_base.shape[0], -1)
+        labels = nn.functional.one_hot(torch.LongTensor([x.gt_label for x in data_samples]), self.num_classes).to(instance.device).float()
+        b = labels.shape[0]
+        inst_label = torch.cat((labels, torch.zeros((b, 1)).to(instance.device)), dim=-1)
+        cont_label = torch.cat((labels, torch.ones((b, 1)).to(instance.device)), dim=-1) / 2
+        back_label = torch.cat((torch.zeros_like(labels), torch.ones((b, 1)).to(instance.device)), dim=-1)
 
-        loss_total, loss = self.bas_net_loss(score_base, score_supp, fore_weights, labels)
+        loss = self.ce_criterion(instance, inst_label) + \
+            self.ce_criterion(context, cont_label) + \
+            self.ce_criterion(background, back_label)
 
-        return dict(loss_cls=loss_total)
+        return dict(loss_cls=loss)
 
     def predict(self, inputs: torch.Tensor, data_samples: SampleList,
                 **kwargs) -> SampleList:
@@ -213,18 +154,26 @@ class RecognizerWSTAL(BaseModel):
                 - item (torch.Tensor): Classification scores, has a shape
                     (num_classes, )
         """
-        score_base, cas_base, score_supp, cas_supp, fore_weights = self.extract_feat(inputs)
+        instance, context, background = self.extract_feat(inputs)
+        n = instance.shape[1]
+        instance = torch.mean(torch.sort(instance, dim=1, descending=True)[0][:, :round(n * self.topk[0])], dim=1) # B, num_classes+1
+        context = torch.mean(torch.sort(context, dim=1, descending=True)[0][:, :round(n * self.topk[1])], dim=1) # B, num_classes+1
+        background = torch.mean(torch.sort(background, dim=1, descending=True)[0][:, :round(n * self.topk[2])], dim=1) # B, num_classes+1
 
-        labels = [x.gt_label for x in data_samples]
-        labels = torch.stack(labels).to(score_base.device)
-        labels = labels.squeeze()
-        labels = nn.functional.one_hot(labels, num_classes=self.num_classes)
-        labels = labels.expand(score_base.shape[0], -1)
+        labels = nn.functional.one_hot(torch.LongTensor([x.gt_label for x in data_samples]), self.num_classes).to(instance.device).float()
+        b = labels.shape[0]
+        inst_label = torch.cat((labels, torch.zeros((b, 1)).to(instance.device)), dim=-1)
+        cont_label = torch.cat((labels, torch.ones((b, 1)).to(instance.device)), dim=-1) / 2
+        back_label = torch.cat((torch.zeros_like(labels), torch.ones((b, 1)).to(instance.device)), dim=-1)
 
-        loss_total, loss = self.bas_net_loss(score_base, score_supp, fore_weights, labels)
+        loss = self.ce_criterion(instance, inst_label) + \
+            self.ce_criterion(context, cont_label) + \
+            self.ce_criterion(background, back_label)
 
-        for ds in data_samples:
-            ds.pred_score = loss_total
+        instance = torch.softmax(instance[:, :2], dim=1)
+        for i, ds in enumerate(data_samples):
+            ds.pred_score = instance[i, [1]]
+            # ds.pred_score = loss
 
         return data_samples
 

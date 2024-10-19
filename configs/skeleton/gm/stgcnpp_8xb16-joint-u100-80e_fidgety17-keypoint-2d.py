@@ -1,35 +1,49 @@
 _base_ = '../../_base_/default_runtime.py'
 
+# load_from = 'https://download.openmmlab.com/mmaction/v1.0/skeleton/stgcn/stgcn_8xb16-joint-u100-80e_ntu120-xsub-keypoint-2d/stgcn_8xb16-joint-u100-80e_ntu120-xsub-keypoint-2d_20221129-612416c6.pth'
+
 model = dict(
     type='RecognizerWSTAL',
     backbone=dict(
-        type='STGCN', graph_cfg=dict(layout='coco', mode='stgcn_spatial')),
-    cls_head=dict(num_classes=2, len_feature=256, alpha=1.0e-4, topk=1/4))
+        type='STGCN',
+        gcn_adaptive='init',
+        gcn_with_res=True,
+        tcn_type='mstcn',
+        graph_cfg=dict(layout='coco', mode='spatial'),
+        in_channels=3),
+    cls_head=dict(type='GCNHead', num_classes=2, in_channels=256),
+    weight=[651/595/2, 651/56/2, 1],
+    # weight=[1, 1],
+    topk=(1/4, 1/6, 1/6),
+    freeze=False)
 
 dataset_type = 'PoseDataset'
-ann_file = 'data/GMA17.pkl'
+ann_file = 'data/sorted_GMA17.pkl'
 train_pipeline = [
     dict(type='PreNormalize2D'),
+    dict(type='AlignPose', aug=True, rand_angle=(-30, 30), rand_scale=(2/3, 4/3), rand_trans=(-1/3, 1/3)),
     dict(type='GenSkeFeat', dataset='coco', feats=['j']),
-    dict(type='SampleAllFrames', clip_len=75, num_clips=12, frame_interval=1),
+    dict(type='SampleAllFrames', clip_len=150, num_clips=23, clip_interval=75, frame_interval=1),
     dict(type='PoseDecode'),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='PackActionInputs')
 ]
 val_pipeline = [
     dict(type='PreNormalize2D'),
+    dict(type='AlignPose'),
     dict(type='GenSkeFeat', dataset='coco', feats=['j']),
     dict(
-        type='SampleAllFrames', clip_len=75, num_clips=12, frame_interval=1, test_mode=True),
+        type='SampleAllFrames', clip_len=150, clip_interval=75, frame_interval=1, test_mode=True),
     dict(type='PoseDecode'),
     dict(type='FormatGCNInput', num_person=1),
     dict(type='PackActionInputs')
 ]
 test_pipeline = [
     dict(type='PreNormalize2D'),
+    dict(type='AlignPose'),
     dict(type='GenSkeFeat', dataset='coco', feats=['j']),
     dict(
-        type='SampleAllFrames', clip_len=75, num_clips=12, frame_interval=1,
+        type='SampleAllFrames', clip_len=150, clip_interval=75, frame_interval=1,
         test_mode=True),
     dict(type='PoseDecode'),
     dict(type='FormatGCNInput', num_person=1),
@@ -37,20 +51,20 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=16,
+    batch_size=8,
     num_workers=30,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
         type='RepeatDataset',
-        times=5,
+        times=3,
         dataset=dict(
             type=dataset_type,
             ann_file=ann_file,
             pipeline=train_pipeline,
-            split='writhing_train')))
+            split='fidgety_train')))
 val_dataloader = dict(
-    batch_size=16,
+    batch_size=1,
     num_workers=30,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=False),
@@ -58,7 +72,7 @@ val_dataloader = dict(
         type=dataset_type,
         ann_file=ann_file,
         pipeline=val_pipeline,
-        split='writhing_test',
+        split='fidgety_test',
         test_mode=True))
 test_dataloader = dict(
     batch_size=1,
@@ -69,29 +83,27 @@ test_dataloader = dict(
         type=dataset_type,
         ann_file=ann_file,
         pipeline=test_pipeline,
-        split='writhing_test',
+        split='fidgety_test',
         test_mode=True))
 
-val_evaluator = [dict(type='SimpleLoss')]
+# val_evaluator = [dict(type='SimpleLoss')]
+val_evaluator = [dict(type='AccMetric', metric_list=('mean_average_precision',))]
 test_evaluator = val_evaluator
-
-train_cfg = dict(
-    type='EpochBasedTrainLoop', max_epochs=16, val_begin=1, val_interval=1)
-val_cfg = dict(type='ValLoop')
-test_cfg = dict(type='TestLoop')
 
 param_scheduler = [
     dict(
-        type='CosineAnnealingLR',
-        eta_min=0,
-        T_max=16,
-        by_epoch=True,
-        convert_to_iter_based=True)
+        type='ExponentialLR',
+        gamma = 0.8)
 ]
+
+train_cfg = dict(
+    type='EpochBasedTrainLoop', max_epochs=20, val_begin=1, val_interval=1)
+val_cfg = dict(type='ValLoop')
+test_cfg = dict(type='TestLoop')
 
 optim_wrapper = dict(
     optimizer=dict(
-        type='Adam', lr=1.0e-4))
+        type='AdamW', lr=1e-4, betas=(0.9, 0.999), weight_decay=0.01))
 
 default_hooks = dict(checkpoint=dict(interval=1), logger=dict(interval=100))
 

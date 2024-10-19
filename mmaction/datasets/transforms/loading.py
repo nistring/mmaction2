@@ -814,14 +814,20 @@ class SampleAllFrames(BaseTransform):
 
     def __init__(self,
                  clip_len: int = 75,
-                 num_clips: int = 12,
-                 frame_interval: int = 2,
+                 num_clips: int = 24,
+                 clip_interval: int = 25,
+                 frame_interval: int = 1,
                  test_mode=False) -> None:
 
         self.clip_len = clip_len
         self.num_clips = num_clips
+        self.clip_interval = clip_interval
         self.frame_interval = frame_interval
         self.test_mode = test_mode
+
+    def _get_all_clips(self, num_frames: int) -> np.ndarray:
+        clips = np.arange(0, num_frames // self.frame_interval - self.clip_len, self.clip_interval)
+        return (np.arange(self.clip_len) + clips[:, np.newaxis]).reshape(-1) * self.frame_interval, len(clips)
 
     def _get_sample_clips(self, num_frames: int) -> np.ndarray:
         """To sample an n-frame clip from the video. UniformSample basically
@@ -842,9 +848,10 @@ class SampleAllFrames(BaseTransform):
         Returns:
             seq (np.ndarray): the indexes of frames of sampled from the video.
         """
-        offset = 0 if self.test_mode else np.random.randint(num_frames - self.frame_interval * self.clip_len * self.num_clips)
-        inds = np.arange(self.num_clips * self.clip_len) * self.frame_interval + offset
-        return inds
+        clips_len = self.clip_interval * (self.num_clips - 1) + self.clip_len
+        assert clips_len * self.frame_interval <= num_frames
+        return (np.arange(self.clip_len) + (np.arange(self.num_clips) * self.clip_interval)[:, np.newaxis]).reshape(-1) * self.frame_interval \
+            + np.random.randint(num_frames - clips_len)
 
     def transform(self, results: Dict) -> Dict:
         """Perform the Uniform Sampling.
@@ -857,12 +864,16 @@ class SampleAllFrames(BaseTransform):
         """
         num_frames = results['total_frames']
 
-        inds = self._get_sample_clips(num_frames)
+        if self.test_mode:
+            inds, num_clips = self._get_all_clips(num_frames)
+        else:
+            inds = self._get_sample_clips(num_frames)
+            num_clips = self.num_clips
 
+        results['num_clips'] = num_clips
         results['frame_inds'] = inds.astype(np.int32)
         results['clip_len'] = self.clip_len
         results['frame_interval'] = self.frame_interval
-        results['num_clips'] = self.num_clips
         return results
 
     def __repr__(self) -> str:
