@@ -167,6 +167,31 @@ class LoadHVULabel(BaseTransform):
 
 
 @TRANSFORMS.register_module()
+class LoadGMLabel(BaseTransform):
+    """Convert the GM label from dictionaries to torch tensors.
+
+    Required keys are "label", "categories", "category_nums", added or modified
+    keys are "label", "mask" and "category_mask".
+    """
+
+    def __init__(self,
+        weight = {'(-)': 1., '(+/-)': 0.75, '(+)': 0.25, '(++)': 0., 'NL': 0., 'PR': 1.},
+        test_mode=False):
+        self.weight = weight
+        self.test_mode = test_mode
+
+    def transform(self, results):
+        results['label'] = self.weight[results['label']]
+        if self.test_mode:
+            results['label'] = round(results['label'])
+        return results
+
+    def __repr__(self):
+        repr_str = (f'{self.__class__.__name__}')
+        return repr_str
+
+
+@TRANSFORMS.register_module()
 class SampleFrames(BaseTransform):
     """Sample frames from the video.
 

@@ -33,7 +33,7 @@ class PackActionInputs(BaseTransform):
             self,
             collect_keys: Optional[Tuple[str]] = None,
             meta_keys: Sequence[str] = ('img_shape', 'img_key', 'video_id',
-                                        'timestamp'),
+                                        'timestamp', 'frame_dir'),
             algorithm_keys: Sequence[str] = (),
     ) -> None:
         self.collect_keys = collect_keys
@@ -90,7 +90,7 @@ class PackActionInputs(BaseTransform):
                     bboxes=to_tensor(results['proposals']))
 
         if 'label' in results:
-            data_sample.set_gt_label(results['label'])
+            data_sample.gt_label = torch.Tensor([results['label']])
 
         # Set custom algorithm keys
         for key in self.algorithm_keys:

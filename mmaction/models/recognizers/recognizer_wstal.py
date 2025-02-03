@@ -39,7 +39,7 @@ class ACMNet(nn.Module):
         instance = x * attention[..., [0]]
         context = x * attention[..., [1]]
         background = x * attention[..., [2]]
-        return instance, context, background
+        return instance, context, background, attention
         
 
 @MODELS.register_module()
@@ -51,7 +51,7 @@ class RecognizerWSTAL(BaseModel):
     videos as inputs.
     """
 
-    def __init__(self, backbone: ConfigType, cls_head: ConfigType, weight, freeze: bool = False, topk: float = 1/4,
+    def __init__(self, backbone: ConfigType, cls_head: ConfigType, freeze: bool = False, topk: float = 1/4,
                  data_preprocessor: ConfigType = None) -> None:
         if data_preprocessor is None:
             # This preprocessor will only stack batch data samples.
@@ -63,9 +63,10 @@ class RecognizerWSTAL(BaseModel):
             for param in self.backbone.parameters():
                 param.requires_grad = False
         self.num_classes = cls_head["num_classes"]
+        assert self.num_classes == 2
         self.attention = ACMNet(cls_head["in_channels"], self.num_classes)
         self.cls_head = MODELS.build(dict(type="FeatureHead", backbone_name="gcn"))
-        self.ce_criterion = nn.CrossEntropyLoss(weight=torch.Tensor(weight))
+        self.ce_criterion = nn.CrossEntropyLoss()
         self.topk = topk
         torch.set_printoptions(sci_mode=False)
 
@@ -95,10 +96,10 @@ class RecognizerWSTAL(BaseModel):
             return x
 
         x = self.cls_head(x).reshape(bs, nc, -1).permute(0, 2, 1) # B, C, M
-        instance, context, background = self.attention(x) # B, M, num_classes+1
+        instance, context, background, attention = self.attention(x) # B, M, num_classes+1
         # x = nn.functional.softmax(self.cls_head(x).reshape(bs, nc, -1), -1)
 
-        return instance, context, background
+        return instance, context, background, attention
 
 
     def loss(self, inputs: torch.Tensor, data_samples: SampleList,
@@ -115,13 +116,14 @@ class RecognizerWSTAL(BaseModel):
         Returns:
             dict: A dictionary of loss components.
         """
-        instance, context, background = self.extract_feat(inputs)
+        instance, context, background, attention = self.extract_feat(inputs)
         n = instance.shape[1]
         instance = torch.mean(torch.sort(instance, dim=1, descending=True)[0][:, :round(n * self.topk[0])], dim=1) # B, num_classes+1
         context = torch.mean(torch.sort(context, dim=1, descending=True)[0][:, :round(n * self.topk[1])], dim=1) # B, num_classes+1
         background = torch.mean(torch.sort(background, dim=1, descending=True)[0][:, :round(n * self.topk[2])], dim=1) # B, num_classes+1
 
-        labels = nn.functional.one_hot(torch.LongTensor([x.gt_label for x in data_samples]), self.num_classes).to(instance.device).float()
+        labels = torch.Tensor([x.gt_label for x in data_samples])
+        labels = torch.stack([1 - labels, labels], dim=1).to(instance.device) # B x 2
         b = labels.shape[0]
         inst_label = torch.cat((labels, torch.zeros((b, 1)).to(instance.device)), dim=-1)
         cont_label = torch.cat((labels, torch.ones((b, 1)).to(instance.device)), dim=-1) / 2
@@ -154,13 +156,14 @@ class RecognizerWSTAL(BaseModel):
                 - item (torch.Tensor): Classification scores, has a shape
                     (num_classes, )
         """
-        instance, context, background = self.extract_feat(inputs)
-        n = instance.shape[1]
-        instance = torch.mean(torch.sort(instance, dim=1, descending=True)[0][:, :round(n * self.topk[0])], dim=1) # B, num_classes+1
+        raw_score, context, background, attention = self.extract_feat(inputs)
+
+        n = raw_score.shape[1]
+        instance = torch.mean(torch.sort(raw_score, dim=1, descending=True)[0][:, :round(n * self.topk[0])], dim=1) # B, num_classes+1
         context = torch.mean(torch.sort(context, dim=1, descending=True)[0][:, :round(n * self.topk[1])], dim=1) # B, num_classes+1
         background = torch.mean(torch.sort(background, dim=1, descending=True)[0][:, :round(n * self.topk[2])], dim=1) # B, num_classes+1
 
-        labels = nn.functional.one_hot(torch.LongTensor([x.gt_label for x in data_samples]), self.num_classes).to(instance.device).float()
+        labels = nn.functional.one_hot(torch.Tensor([x.gt_label for x in data_samples]).type(torch.LongTensor), self.num_classes).to(instance.device)
         b = labels.shape[0]
         inst_label = torch.cat((labels, torch.zeros((b, 1)).to(instance.device)), dim=-1)
         cont_label = torch.cat((labels, torch.ones((b, 1)).to(instance.device)), dim=-1) / 2
@@ -173,6 +176,8 @@ class RecognizerWSTAL(BaseModel):
         instance = torch.softmax(instance[:, :2], dim=1)
         for i, ds in enumerate(data_samples):
             ds.pred_score = instance[i, [1]]
+            ds.score = raw_score[i]
+            ds.attention = attention[i]
             # ds.pred_score = loss
 
         return data_samples
